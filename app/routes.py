@@ -141,7 +141,7 @@ def verify_otp():
         return jsonify({'message': 'OTP has expired'}), 400
 
     # Check OTP match
-    if otp_data['otp'] == otp_input:
+    if otp_data['otp'] == otp:
         otp_store.pop(email, None)  # Remove OTP after successful verification
         return jsonify({'message': 'OTP verified successfully'})
     else:
