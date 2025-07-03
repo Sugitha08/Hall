@@ -13,6 +13,9 @@ import os
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError ,InvalidHashError
 import base64
+import random
+import time as systime
+
 
 ph = PasswordHasher()
 auth = Blueprint('auth',__name__)
@@ -21,11 +24,18 @@ accounts = Blueprint("accounts" , __name__)
 notes = Blueprint("notes" , __name__)
 personal = Blueprint("personal" , __name__)
 
+# Temporary storage for OTPs (for testing, use DB or Cache in production)
+otp_store = {}
+
+OTP_EXPIRY_SECONDS = 120
 
 
 @auth.route('/admin/register', methods=['POST'])
 # @limiter.limit("5 per minute")  # Rate limit
-def pub_register():
+def pub_register():    
+    if Admin.query.first():
+        return jsonify({"error": "Admin account already exists. Registration is closed."}), 403
+     
     data = request.json
     required_fields = ["email", "password"]
 
@@ -61,6 +71,12 @@ def get_admins():
     return jsonify({"admins": admin_list}), 200
 
 
+@auth.route('/admin/count', methods=['GET'])
+def get_admin_count():
+    count = Admin.query.count()
+    return jsonify({"count": count}), 200  
+
+
 @auth.route('/login' , methods=['POST'])
 # @limiter.limit("1 per week")
 def login():
@@ -83,6 +99,70 @@ def login():
         return jsonify({"error": "Invalid email or password"}), 401
     access_token = create_access_token(identity=str(admin.id))
     return jsonify({"access_token": access_token, "message": "Login successful"}), 200
+
+@auth.route('/send-otp', methods=['POST'])
+def send_otp():
+    data = request.json
+    email = data.get('email')
+    if not email:
+        return jsonify({'message': 'Email required'}), 400
+    
+    admin = Admin.query.filter_by(email=email).first()
+    if not admin:
+        return jsonify({"error": "Admin not found"}), 404
+
+    otp = str(random.randint(1000, 9999))
+    otp_store[email] = {'otp': otp, 'timestamp': systime.time()}   # Store OTP temporarily
+
+    try:
+        msg = Message('Your OTP for Password Reset', sender='your_email@gmail.com', recipients=[email])
+        msg.body = f'Your OTP is {otp}'
+        mail.send(msg)
+        return jsonify({'message': 'OTP sent successfully'})
+    except Exception as e:
+        return jsonify({'message': 'Failed to send OTP', 'error': str(e)}), 500
+
+@auth.route('/verify-otp', methods=['POST'])
+def verify_otp():
+    data = request.json
+    email = data.get('email')
+    otp = data.get('otp')
+
+    if not email or not otp:
+        return jsonify({'message': 'Email and OTP required'}), 400
+    
+    otp_data = otp_store.get(email)
+
+    if not otp_data:
+        return jsonify({'message': 'OTP not found or expired'}), 400
+    
+    if systime.time() - otp_data['timestamp'] > OTP_EXPIRY_SECONDS:
+        otp_store.pop(email, None)  # Remove expired OTP
+        return jsonify({'message': 'OTP has expired'}), 400
+
+    # Check OTP match
+    if otp_data['otp'] == otp_input:
+        otp_store.pop(email, None)  # Remove OTP after successful verification
+        return jsonify({'message': 'OTP verified successfully'})
+    else:
+        return jsonify({'message': 'Invalid OTP'}), 400
+    
+
+@auth.route('/admin/reset-password', methods=['POST'])
+def reset_password():
+    data = request.json
+    email = data.get('email')
+    new_password = data.get('password')
+    admin = Admin.query.filter_by(email=email).first()
+    if not admin:
+        return jsonify({"error": "Admin not found"}), 404
+
+    hashed_password = ph.hash(new_password)
+    admin.password = hashed_password
+    db.session.commit()
+
+    return jsonify({"message": "Password reset successful"}), 200
+
 
 @auth.route('/get/profile' , methods=['GET'])
 @jwt_required()
